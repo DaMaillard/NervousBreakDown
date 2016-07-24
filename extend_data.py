@@ -14,7 +14,7 @@ import cv2
 import random as rd
 from scipy.ndimage.interpolation import map_coordinates
 from scipy.ndimage.filters import gaussian_filter
-
+from train import split_train_valid
 
 def get_nb_images(data_path):
     images = os.listdir(data_path)
@@ -144,6 +144,6 @@ def create_distorted_imgs(data_path, ratio, alpha, sigma, alpha_affine):
 if __name__ == '__main__':
     rd.seed(1234)
     #create_rotated_imgs('data_extended/train', .2, 180)
-    create_distorted_imgs('data_extended/train', .2, 2, 0.08, 0.08)
+    create_distorted_imgs('data_augmented/train', .2, 2, 0.08, 0.08)
     
 

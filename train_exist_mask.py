@@ -9,7 +9,7 @@ from __future__ import print_function
 
 import cv2
 import numpy as np
-from keras.models import Model
+from keras.models import Model, Sequential
 from keras.layers import Input, merge, Convolution2D, MaxPooling2D, UpSampling2D, Dropout
 from keras.layers.core import Dense, Activation, Flatten 
 from keras.optimizers import Adam, SGD
@@ -18,14 +18,10 @@ from keras import backend as K
 from keras.utils import np_utils
 from sklearn.cross_validation import train_test_split
 from data import load_train_data, load_test_data
-from train import preprocess, img_rows, img_cols
+from train import preprocess, load_data, split_train_valid, img_rows, img_cols
 from submission import submission
 import scipy as sp
 
-img_rows = 64
-img_cols = 80
-
-smooth = 1.
 
 
 def logloss(Y_true, Y_pred):
@@ -46,16 +42,16 @@ def is_there_mask(imgs_mask):
     
     return np.array(out)
 
-def get_unet_exist_mask_zfturbo(img_rows, img_cols):
+def get_unet_exist_mask_zfturbo(img_rows, img_cols, dropout = .15):
     model = Sequential()
     model.add(Convolution2D(4, 3, 3, border_mode='same', init='he_normal',
                             input_shape=(1, img_rows, img_cols)))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.15))
+    model.add(Dropout(dropout))
 
     model.add(Convolution2D(8, 3, 3, border_mode='same', init='he_normal'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
-    model.add(Dropout(0.15))
+    model.add(Dropout(dropout))
 
     model.add(Flatten())
     model.add(Dense(2))
@@ -134,7 +130,7 @@ def get_unet_exist_mask_mine(dropout):
 
 def get_unet_exist_mask(dropout):
 #    model = get_unet_exist_mask_mine(dropout)
-    model = get_unet_exist_mask_zfturbo(img_rows, img_cols)
+    model = get_unet_exist_mask_zfturbo(img_rows, img_cols, dropout)
     return model
     
 def preprocess_exist_mask(imgs):
@@ -150,28 +146,19 @@ def preprocess_exist_mask(imgs):
     return imgs_p
 
     
-def train_unet_exist_mask(data_path, save_path, basename="", weight_load = "", 
+def train_unet_exist_mask(imgs_train, imgs_mask_train, imgs_patient_train, 
+                          weight_load = "", save_path='', basename="",  
                           valid_size=.2, batch_size = 32, nb_epoch = 10, dropout = .25):
                           
-    print('-'*30)
-    print('Loading and preprocessing train data...')
-    print('-'*30)
-    imgs_train, imgs_mask_train, imgs_patient_train = load_train_data(data_path)
-
-    imgs_train = preprocess(imgs_train)
     imgs_exist_mask_train = preprocess_exist_mask(imgs_mask_train)
 
-    imgs_train = imgs_train.astype('float32')
-    mean = np.mean(imgs_train)  # mean for data centering
-    std = np.std(imgs_train)  # std for data normalization
+    seed=1234
+    train_ind, val_ind = split_train_valid(imgs_train, imgs_patient_train, valid_size, seed)
 
-    imgs_train -= mean
-    imgs_train /= std
-
-    random_state = 51
-    X_train, X_valid, Y_train, Y_valid = train_test_split(imgs_train, imgs_exist_mask_train, 
-                                                          test_size=valid_size, random_state=random_state)
-
+    X_train = imgs_train[train_ind]
+    X_valid = imgs_train[val_ind]
+    Y_train = imgs_exist_mask_train[train_ind]
+    Y_valid = imgs_exist_mask_train[val_ind]
     
     print('-'*30)
     print('Creating and compiling model...')
@@ -207,20 +194,11 @@ def train_unet_exist_mask(data_path, save_path, basename="", weight_load = "",
     weight_save = save_path + '/unet_exist' + basename + '.hdf5'
     if weight_save:
         model.save_weights(weight_save, overwrite=True)
-    
-    return mean, std
-    
-    
-def predict_unet_exist_mask(data_path, save_path, basename="", weight_load = "", dropout = 0.2, train_mean=0, train_std=1, threshold = .5):
-    print('-'*30)
-    print('Loading and preprocessing test data...')
-    print('-'*30)
-    imgs_test, imgs_id_test = load_test_data(data_path)
-    imgs_test = preprocess(imgs_test)
 
-    imgs_test = imgs_test.astype('float32')
-    imgs_test -= train_mean
-    imgs_test /= train_std
+    
+    
+def predict_unet_exist_mask(imgs_test, save_path, basename="", weight_load = "", 
+                            dropout = 0.15, threshold = .5):
 
     model = get_unet_exist_mask(dropout)
     print('-'*30)
@@ -237,27 +215,32 @@ def predict_unet_exist_mask(data_path, save_path, basename="", weight_load = "",
     mask_filename = save_path + '/imgs_exist_mask_test' + basename + '.npy'
     np.save(mask_filename, imgs_exist_mask_test)
     
+    print('on a trouvé ' + imgs_exist_mask_test.sum().astype(int).astype(str) + ' masques présents dans le test set')
     
     
-def train_and_predict_exist_mask(data_path, save_path, basename="", weight_load = "", 
-                      valid_size=.2, batch_size = 32, nb_epoch = 10, dropout = .25, threshold=.5):
+def train_and_predict_exist_mask(imgs_train, imgs_mask_train, imgs_patient_train, imgs_test,
+                                 data_path, save_path, basename="", weight_load = "", 
+                                 valid_size=.2, batch_size = 32, nb_epoch = 10, dropout = .25, threshold=.5):
                           
-    train_mean, train_std = train_unet_exist_mask(data_path, save_path, basename, weight_load, 
-                                       valid_size, batch_size, nb_epoch, dropout)
+    train_unet_exist_mask(imgs_train, imgs_mask_train, imgs_patient_train, 
+                          weight_load, save_path, basename, 
+                          valid_size, batch_size, nb_epoch, dropout)
                                        
     weights = save_path + '/unet_exist' + basename + '.hdf5'
-    predict_unet_exist_mask(data_path, save_path, basename, weights, dropout, train_mean, train_std, threshold)
+    predict_unet_exist_mask(imgs_test, save_path, basename, weights, dropout, threshold)
              
 
 if __name__ == '__main__':
-    data_path = 'data_original'
-    save_path = 'exist_mask_160721'
-    basename = '_20'
-    weight_load = ''
-    train_and_predict_exist_mask(data_path, save_path, basename, weight_load, 
-                      valid_size=0.2, batch_size = 16, nb_epoch = 30, dropout = 0.2, threshold = .3)
-
-    mask_filename = save_path + '/imgs_exist_mask_test' + basename + '.npy'
-    pred_msk = np.load(mask_filename)
-    print(imgs_exist_mask_train[:,1])
-    print(pred_msk)
+    print('youhou')
+#    data_path = 'data_original'
+#    save_path = 'exist_mask_160721'
+#    basename = '_16'
+#    weight_load = ''
+#    train_and_predict_exist_mask(data_path, save_path, basename, weight_load, 
+#                      valid_size=0.2, batch_size = 16, nb_epoch = 16, dropout = 0.2, threshold = .2)
+#
+#    mask_filename = save_path + '/imgs_exist_mask_test' + basename + '.npy'
+#    pred_msk = np.load(mask_filename)
+#    print(imgs_exist_mask_train[:,1])
+#    print(pred_msk)
+#    
